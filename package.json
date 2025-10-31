@@ -1,5 +1,5 @@
 {
-  "name": "node-red-contrib-odbc",
+  "name": "node-red-contrib-odbc-with-pooling",
   "version": "2.0.0-beta.0",
   "description": "Node-RED node for making ODBC connections",
   "keywords": [ "node-red", "odbc" ],
@@ -14,18 +14,18 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/markdirish/node-red-contrib-odbc.git"
+    "url": "git+https://github.com/DeanD-code/node-red-contrib-odbc-with-pooling.git"
   },
   "author": {
-    "name" : "Mark Irish",
-    "email" : "mirish@ibm.com",
-    "url" : "https://www.mark.irish.com"
+    "name" : "Dean Dye",
+    "email" : "dean@thecodeengine.co.uk",
+    "url" : "www.thecodeengine.co.uk"
   },
   "license": "Apache 2",
   "bugs": {
-    "url": "https://github.com/markdirish/node-red-contrib-odbc/issues"
+    "url": "https://github.com/DeanD-code/node-red-contrib-odbc/issues"
   },
-  "homepage": "https://github.com/markdirish/node-red-contrib-odbc#readme",
+  "homepage": "https://github.com/DeanD-code/node-red-contrib-odbc#readme",
   "dependencies": {
     "odbc": "^2.3.4"
   }
