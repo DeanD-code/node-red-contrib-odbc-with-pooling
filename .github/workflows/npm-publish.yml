@@ -35,6 +35,9 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org/
+      - name: Configure npm authentication
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{secrets.npm_token}}" > ~/.npmrc
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
       - name: Bump version for each commit
         run: |
@@ -47,5 +50,3 @@ jobs:
           npm pkg set version="${NEW_VERSION}"
       - run: npm install
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.npm_token}}
