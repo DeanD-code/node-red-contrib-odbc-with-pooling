@@ -44,9 +44,10 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
           SHORT_SHA=$(git rev-parse --short HEAD)
           CURRENT_VERSION=$(node -p "require('./package.json').version")
-          # Append build timestamp and commit SHA as additional pre-release identifiers
-          # Format: existing-version.build.timestamp.sha (e.g., 2.0.0-beta.0.build.20241031183037.abc1234)
-          NEW_VERSION="${CURRENT_VERSION}.build.${TIMESTAMP}.${SHORT_SHA}"
+          # Use build metadata (after +) for timestamp and commit SHA
+          # Format: existing-version+build.timestamp.sha (e.g., 1-beta.0+build.20241031183037.abc1234)
+          # This preserves the existing version while adding unique build info
+          NEW_VERSION="${CURRENT_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
           npm pkg set version="${NEW_VERSION}"
       - run: npm install
       - run: npm publish --access public
