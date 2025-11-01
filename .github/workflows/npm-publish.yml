@@ -50,7 +50,7 @@ jobs:
             # For unscoped packages, create empty file
             touch ~/.npmrc
           fi
-          echo "//registry.npmjs.org/:_authToken=${{secrets.npm_token}}" >> ~/.npmrc
+          echo "//registry.npmjs.org/:_authToken=${{secrets.NPM_TOKEN}}" >> ~/.npmrc
           echo "Generated .npmrc configuration:"
           cat ~/.npmrc | sed 's/:[^:]*$/:***/'  # Show config without exposing token
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
