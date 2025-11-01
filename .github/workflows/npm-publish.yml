@@ -39,7 +39,19 @@ jobs:
       - name: Configure npm authentication
         run: |
           npm config set registry https://registry.npmjs.org/
-          echo "//registry.npmjs.org/:_authToken=${{secrets.npm_token}}" > ~/.npmrc
+          # Configure authentication for scoped packages
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          # Create .npmrc with proper configuration
+          if [[ "$PACKAGE_NAME" == @* ]]; then
+            # Extract scope from scoped package name (e.g., @deand-code-engine/node-red-contrib-odbc-with-pooling)
+            PACKAGE_SCOPE=$(echo "$PACKAGE_NAME" | cut -d'/' -f1)
+            echo "${PACKAGE_SCOPE}:registry=https://registry.npmjs.org/" > ~/.npmrc
+          else
+            # For unscoped packages, create empty file
+            touch ~/.npmrc
+          fi
+          echo "//registry.npmjs.org/:_authToken=${{secrets.npm_token}}" >> ~/.npmrc
+          echo "Generated .npmrc configuration:"
           cat ~/.npmrc | sed 's/:[^:]*$/:***/'  # Show config without exposing token
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
       - name: Bump version for each commit
