@@ -100,7 +100,7 @@ jobs:
             exit 1
           fi
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
-      - name: Auto-increment version based on commits
+      - name: Determine and set version
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           CURRENT_VERSION=$(node -p "require('./package.json').version")
@@ -116,92 +116,99 @@ jobs:
             echo "Package not found on npm - this is the first publish"
           fi
           
-          # Check if this is a manual initialization (workflow_dispatch) for first publish
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -z "$PUBLISHED_VERSION" ]; then
-            echo "Manual workflow trigger - first publish, using base version from package.json"
-            exit 0  # Skip version bumping for initial publish
-          fi
-          
-          # Get the last commit message to determine version bump type
-          LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "Last commit message: $LAST_COMMIT_MSG"
-          
-          # Determine version bump based on conventional commits or commit message
-          VERSION_BUMP="patch"  # Default to patch
-          
-          if echo "$LAST_COMMIT_MSG" | grep -qiE "^(breaking|BREAKING|major)"; then
-            VERSION_BUMP="major"
-            echo "Detected: MAJOR version bump (breaking change)"
-          elif echo "$LAST_COMMIT_MSG" | grep -qiE "^(feat|feature|add)"; then
-            VERSION_BUMP="minor"
-            echo "Detected: MINOR version bump (new feature)"
-          elif echo "$LAST_COMMIT_MSG" | grep -qiE "^(fix|bugfix|patch|bug)"; then
-            VERSION_BUMP="patch"
-            echo "Detected: PATCH version bump (bug fix)"
-          else
-            # If no conventional commit pattern, always increment patch to avoid version conflicts
-            echo "No conventional commit pattern found, defaulting to PATCH increment to avoid conflicts"
-            VERSION_BUMP="patch"
-          fi
-          
-          # Compare versions to determine base
           # Extract clean versions (remove build metadata and pre-release for comparison)
           CLEAN_CURRENT=$(echo "$CURRENT_VERSION" | sed 's/+.*//' | sed 's/-.*//')
           
-          if [ -n "$PUBLISHED_VERSION" ]; then
+          # Determine if we should use package.json version directly (manual override)
+          USE_PACKAGE_JSON_VERSION=false
+          
+          if [ -z "$PUBLISHED_VERSION" ]; then
+            # First publish - always use package.json
+            echo "First publish - using package.json version: $CLEAN_CURRENT"
+            USE_PACKAGE_JSON_VERSION=true
+            FINAL_BASE_VERSION="$CLEAN_CURRENT"
+          else
             CLEAN_PUBLISHED=$(echo "$PUBLISHED_VERSION" | sed 's/+.*//' | sed 's/-.*//')
             
-            # Check if package.json version is higher than published (manual override)
-            # semver is available as npm dependency, use it for comparison
-            VERSION_COMPARE=$(node -p "try { const semver = require('semver'); semver.gt('$CLEAN_CURRENT', '$CLEAN_PUBLISHED') ? 'true' : 'false'; } catch(e) { 'false'; }")
-            if [ "$VERSION_COMPARE" = "true" ]; then
-              echo "Package.json version ($CLEAN_CURRENT) is higher than published ($CLEAN_PUBLISHED)"
-              echo "Using package.json version directly as manual override"
-              USE_MANUAL_VERSION=true
-              CLEAN_VERSION="$CLEAN_CURRENT"
-            else
-              BASE_VERSION="$PUBLISHED_VERSION"
-              echo "Using published version as base: $BASE_VERSION"
-              CLEAN_VERSION=$(echo "$BASE_VERSION" | sed 's/+.*//' | sed 's/-.*//')
-              USE_MANUAL_VERSION=false
-            fi
-          else
-            echo "Using package.json version as base (first publish): $CURRENT_VERSION"
-            USE_MANUAL_VERSION=true
-            CLEAN_VERSION="$CLEAN_CURRENT"
-          fi
-          
-          echo "Clean base version for incrementing: $CLEAN_VERSION"
-          
-          if [ "$USE_MANUAL_VERSION" = "true" ]; then
-            # Use package.json version directly without incrementing
-            npm pkg set version="${CLEAN_VERSION}"
-          else
-            # Temporarily set clean version for npm version command
-            npm pkg set version="${CLEAN_VERSION}"
+            # Use a Node.js script to properly compare versions using semver
+            # This ensures reliable version comparison
+            VERSION_COMPARE_RESULT=$(node -e "
+              const semver = require('semver');
+              const current = '$CLEAN_CURRENT';
+              const published = '$CLEAN_PUBLISHED';
+              
+              if (semver.gt(current, published)) {
+                console.log('HIGHER');
+              } else if (semver.eq(current, published)) {
+                console.log('EQUAL');
+              } else {
+                console.log('LOWER');
+              }
+            ")
             
-            # Increment version using npm version (but don't commit to git)
-            npm version "$VERSION_BUMP" --no-git-tag-version
+            echo "Version comparison: package.json ($CLEAN_CURRENT) vs published ($CLEAN_PUBLISHED) = $VERSION_COMPARE_RESULT"
+            
+            if [ "$VERSION_COMPARE_RESULT" = "HIGHER" ]; then
+              echo "✓ Package.json version is higher - using it as manual override"
+              USE_PACKAGE_JSON_VERSION=true
+              FINAL_BASE_VERSION="$CLEAN_CURRENT"
+            else
+              # Published version is higher or equal - use auto-increment logic
+              echo "Using published version as base for auto-increment"
+              FINAL_BASE_VERSION="$CLEAN_PUBLISHED"
+              
+              # Get the last commit message to determine version bump type
+              LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
+              echo "Last commit message: $LAST_COMMIT_MSG"
+              
+              # Determine version bump based on conventional commits
+              VERSION_BUMP="patch"  # Default to patch
+              
+              if echo "$LAST_COMMIT_MSG" | grep -qiE "^(breaking|BREAKING|major)"; then
+                VERSION_BUMP="major"
+                echo "Detected: MAJOR version bump (breaking change)"
+              elif echo "$LAST_COMMIT_MSG" | grep -qiE "^(feat|feature|add)"; then
+                VERSION_BUMP="minor"
+                echo "Detected: MINOR version bump (new feature)"
+              elif echo "$LAST_COMMIT_MSG" | grep -qiE "^(fix|bugfix|patch|bug)"; then
+                VERSION_BUMP="patch"
+                echo "Detected: PATCH version bump (bug fix)"
+              else
+                echo "No conventional commit pattern found, defaulting to PATCH increment"
+                VERSION_BUMP="patch"
+              fi
+              
+              # Set base version and increment
+              npm pkg set version="${FINAL_BASE_VERSION}"
+              npm version "$VERSION_BUMP" --no-git-tag-version
+              FINAL_BASE_VERSION=$(node -p "require('./package.json').version")
+              echo "Auto-incremented version: $FINAL_BASE_VERSION"
+            fi
           fi
           
-          # Get the incremented version
-          INCREMENTED_VERSION=$(node -p "require('./package.json').version")
-          echo "Incremented version: $INCREMENTED_VERSION"
+          # If using package.json version directly, set it (might have been modified by auto-increment above)
+          if [ "$USE_PACKAGE_JSON_VERSION" = "true" ]; then
+            npm pkg set version="${FINAL_BASE_VERSION}"
+            echo "Using package.json version directly: $FINAL_BASE_VERSION"
+          fi
           
           # Always add build metadata to ensure uniqueness
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
           SHORT_SHA=$(git rev-parse --short HEAD)
-          FINAL_VERSION="${INCREMENTED_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
+          FINAL_VERSION="${FINAL_BASE_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
           npm pkg set version="${FINAL_VERSION}"
           echo "Final version with build metadata: $FINAL_VERSION"
           
           # Verify version is different from published
           if [ -n "$PUBLISHED_VERSION" ]; then
-            if [ "$FINAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+            # Compare without build metadata
+            CLEAN_FINAL=$(echo "$FINAL_VERSION" | sed 's/+.*//')
+            CLEAN_PUB=$(echo "$PUBLISHED_VERSION" | sed 's/+.*//')
+            if [ "$CLEAN_FINAL" = "$CLEAN_PUB" ] && [ "$(echo "$FINAL_VERSION" | grep -o '+.*')" = "$(echo "$PUBLISHED_VERSION" | grep -o '+.*')" ]; then
               echo "ERROR: Final version matches published version!"
               exit 1
             fi
-            echo "✓ Version is unique (different from published: $PUBLISHED_VERSION)"
+            echo "✓ Version is unique (final: $CLEAN_FINAL vs published: $CLEAN_PUB)"
           fi
       - run: npm install
       - name: Verify package info and access
