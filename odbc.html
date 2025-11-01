@@ -19,7 +19,13 @@ limitations under the License.
     category: 'config',
     defaults: {
       connectionString: {value:"", required:true},
-      name: {value:""}
+      name: {value:""},
+      initialSize: {value:""},
+      incrementSize: {value:""},
+      maxSize: {value:""},
+      shrinkPool: {value:false},
+      connectionTimeout: {value:""},
+      loginTimeout: {value:""}
     },
     label: function() {
       return this.name || 'ODBC pool';
@@ -34,33 +40,33 @@ limitations under the License.
   </div>
 
   <div class="form-row">
-    <label for="node-config-input-initialsize"><i class="icon-bookmark"></i>Initial Size</label>
-    <input type="number" id="node-config-input-initialsize" placeholder="10">
+    <label for="node-config-input-initialSize"><i class="icon-bookmark"></i>Initial Size</label>
+    <input type="number" id="node-config-input-initialSize" placeholder="10">
   </div>
 
   <div class="form-row">
-    <label for="node-config-input-incrementsize"><i class="icon-bookmark"></i>Increment Size</label>
-    <input type="number" id="node-config-input-incrementsize" placeholder="10">
+    <label for="node-config-input-incrementSize"><i class="icon-bookmark"></i>Increment Size</label>
+    <input type="number" id="node-config-input-incrementSize" placeholder="10">
   </div>
 
   <div class="form-row">
-    <label for="node-config-input-maxsize"><i class="icon-bookmark"></i>Max Size</label>
-    <input type="number" id="node-config-input-maxsize" placeholder="">
+    <label for="node-config-input-maxSize"><i class="icon-bookmark"></i>Max Size</label>
+    <input type="number" id="node-config-input-maxSize" placeholder="">
   </div>
 
   <div class="form-row">
-    <label for="node-config-input-maxsize"><i class="icon-bookmark"></i>Shrink Pool</label>
-    <button type="button" class="red-ui-button">On</button>
+    <label for="node-config-input-shrinkPool"><i class="icon-bookmark"></i>Shrink Pool</label>
+    <input type="checkbox" id="node-config-input-shrinkPool" style="display: inline-block; width: auto; vertical-align: top; margin-top: 4px;">
   </div>
 
   <div class="form-row">
-    <label for="node-config-input-connectiontimeout"><i class="icon-bookmark"></i>Connection Timeout</label>
-    <input type="number" id="node-config-input-connectiontimeout" placeholder="10">
+    <label for="node-config-input-connectionTimeout"><i class="icon-bookmark"></i>Connection Timeout</label>
+    <input type="number" id="node-config-input-connectionTimeout" placeholder="10">
   </div>
 
   <div class="form-row">
-    <label for="node-config-input-logintimeout"><i class="icon-bookmark"></i>Login Timeout</label>
-    <input type="number" id="node-config-input-logintimeout" placeholder="10">
+    <label for="node-config-input-loginTimeout"><i class="icon-bookmark"></i>Login Timeout</label>
+    <input type="number" id="node-config-input-loginTimeout" placeholder="10">
   </div>
 </script>
 

@@ -19,10 +19,29 @@ module.exports = function(RED) {
   function odbcPool(config) {
     RED.nodes.createNode(this, config);
 
-    // Pass a poolConfig object to the odbc.pool function. If the values are not
-    // set on the config object, they will get set to `undefined`, in which case
-    // odbc.pool will set them to the defaults during its execution.
-    this.poolConfig = config;
+    // Build poolConfig object, converting empty strings to undefined and
+    // converting numeric strings to numbers. If values are undefined, 
+    // odbc.pool will set them to defaults during its execution.
+    this.poolConfig = {
+      connectionString: config.connectionString
+    };
+    
+    // Handle numeric pool settings
+    const numericSettings = ['initialSize', 'incrementSize', 'maxSize', 'connectionTimeout', 'loginTimeout'];
+    numericSettings.forEach(setting => {
+      if (config[setting] !== undefined && config[setting] !== null && config[setting] !== '') {
+        const numValue = Number(config[setting]);
+        if (!isNaN(numValue)) {
+          this.poolConfig[setting] = numValue;
+        }
+      }
+    });
+    
+    // Handle boolean setting
+    if (config.shrinkPool !== undefined && config.shrinkPool !== null) {
+      this.poolConfig.shrinkPool = config.shrinkPool;
+    }
+    
     this.pool = null;
     this.connecting = false;
 
