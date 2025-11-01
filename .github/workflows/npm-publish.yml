@@ -29,27 +29,62 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify npm token is set
+        run: |
+          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "ERROR: NPM_TOKEN secret is not set in GitHub repository secrets"
+            echo "Please add NPM_TOKEN secret in: Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          echo "✓ NPM_TOKEN secret is configured"
+      
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org/
+      
       - name: Configure npm authentication
         run: |
-          npm config set registry https://registry.npmjs.org/
-          # Configure authentication for scoped packages
+          # Get package info
           PACKAGE_NAME=$(node -p "require('./package.json').name")
-          # Create .npmrc with proper configuration
+          echo "Configuring authentication for package: $PACKAGE_NAME"
+          
+          # Create .npmrc file
           if [[ "$PACKAGE_NAME" == @* ]]; then
-            # Extract scope from scoped package name (e.g., @deand-code-engine/node-red-contrib-odbc-with-pooling)
+            # Extract scope from scoped package name
             PACKAGE_SCOPE=$(echo "$PACKAGE_NAME" | cut -d'/' -f1)
+            echo "Scoped package detected: $PACKAGE_SCOPE"
+            
+            # Set scope registry configuration
+            npm config set "@${PACKAGE_SCOPE#@}:registry" https://registry.npmjs.org/
+            
+            # Configure auth token for the scope
             echo "${PACKAGE_SCOPE}:registry=https://registry.npmjs.org/" > ~/.npmrc
           else
-            # For unscoped packages, create empty file
+            echo "Unscoped package detected"
             touch ~/.npmrc
           fi
+          
+          # Add authentication token
           echo "//registry.npmjs.org/:_authToken=${{secrets.NPM_TOKEN}}" >> ~/.npmrc
+          
+          # Verify .npmrc contents (masked)
           echo "Generated .npmrc configuration:"
-          cat ~/.npmrc | sed 's/:[^:]*$/:***/'  # Show config without exposing token
+          cat ~/.npmrc | sed 's/:[^:]*$/:***/'
+          
+          # Verify authentication
+          echo "Verifying npm authentication..."
+          NPM_USER=$(npm whoami 2>&1)
+          if [ $? -eq 0 ]; then
+            echo "✓ Authenticated as: $NPM_USER"
+          else
+            echo "✗ Authentication failed: $NPM_USER"
+            echo "Please verify:"
+            echo "1. NPM_TOKEN secret is correct"
+            echo "2. Token has 'publish' permissions"
+            echo "3. Token belongs to the account that owns scope: ${PACKAGE_SCOPE:-N/A}"
+            exit 1
+          fi
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
       - name: Bump version for each commit
         run: |
@@ -73,19 +108,42 @@ jobs:
           NEW_VERSION="${CURRENT_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
           npm pkg set version="${NEW_VERSION}"
       - run: npm install
-      - name: Verify npm authentication and package info
+      - name: Verify package info and access
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          NPM_USER=$(npm whoami)
+          
+          echo "=== Package Information ==="
           echo "Package name: $PACKAGE_NAME"
           echo "Package version: $PACKAGE_VERSION"
-          echo "Authenticated as: $(npm whoami)"
+          echo "NPM user: $NPM_USER"
+          
+          if [[ "$PACKAGE_NAME" == @* ]]; then
+            PACKAGE_SCOPE=$(echo "$PACKAGE_NAME" | cut -d'/' -f1)
+            EXPECTED_USER="${PACKAGE_SCOPE#@}"
+            echo "Package scope: $PACKAGE_SCOPE"
+            echo "Expected user/org: $EXPECTED_USER"
+            
+            # Check if scope matches user
+            if [[ "$NPM_USER" != "$EXPECTED_USER" ]] && [[ "$NPM_USER" != *"$EXPECTED_USER"* ]]; then
+              echo "⚠️  WARNING: NPM user '$NPM_USER' may not match scope '$PACKAGE_SCOPE'"
+              echo "For scoped packages, the npm user must own the scope."
+            fi
+          fi
+          
+          echo ""
           echo "Checking if package exists..."
           if npm view "$PACKAGE_NAME" version 2>/dev/null; then
-            echo "Package already exists on npm. Checking if you have publish access..."
-            npm access ls-packages 2>/dev/null | grep -q "$PACKAGE_NAME" && echo "You have access" || echo "WARNING: Package exists but you may not have access"
+            echo "✓ Package exists on npm"
+            echo "Checking publish access..."
+            if npm access ls-packages 2>/dev/null | grep -q "$PACKAGE_NAME"; then
+              echo "✓ You have publish access to this package"
+            else
+              echo "⚠️  Package exists but you may not have publish access"
+            fi
           else
-            echo "Package name is available (first publish)"
+            echo "Package does not exist (first publish)"
           fi
       - name: Publish to npm
         run: |
