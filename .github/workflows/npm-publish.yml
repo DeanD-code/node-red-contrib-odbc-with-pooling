@@ -147,36 +147,34 @@ jobs:
           # Compare versions to determine base
           # Extract clean versions (remove build metadata and pre-release for comparison)
           CLEAN_CURRENT=$(echo "$CURRENT_VERSION" | sed 's/+.*//' | sed 's/-.*//')
+          
           if [ -n "$PUBLISHED_VERSION" ]; then
             CLEAN_PUBLISHED=$(echo "$PUBLISHED_VERSION" | sed 's/+.*//' | sed 's/-.*//')
             
-            # Compare versions using npm's semver comparison
-            # If package.json version is higher, use it (manual override)
-            if npm version "$CLEAN_CURRENT" --silent 2>/dev/null && \
-               npm view "$PACKAGE_NAME@$CLEAN_CURRENT" version 2>/dev/null >/dev/null || \
-               node -e "const semver = require('semver'); process.exit(semver.gt('$CLEAN_CURRENT', '$CLEAN_PUBLISHED') ? 0 : 1)" 2>/dev/null; then
-              BASE_VERSION="$CURRENT_VERSION"
-              echo "Using package.json version as base (higher than published): $BASE_VERSION"
-              echo "This allows manual version overrides in package.json"
+            # Check if package.json version is higher than published (manual override)
+            # semver is available as npm dependency, use it for comparison
+            VERSION_COMPARE=$(node -p "try { const semver = require('semver'); semver.gt('$CLEAN_CURRENT', '$CLEAN_PUBLISHED') ? 'true' : 'false'; } catch(e) { 'false'; }")
+            if [ "$VERSION_COMPARE" = "true" ]; then
+              echo "Package.json version ($CLEAN_CURRENT) is higher than published ($CLEAN_PUBLISHED)"
+              echo "Using package.json version directly as manual override"
+              USE_MANUAL_VERSION=true
+              CLEAN_VERSION="$CLEAN_CURRENT"
             else
               BASE_VERSION="$PUBLISHED_VERSION"
               echo "Using published version as base: $BASE_VERSION"
+              CLEAN_VERSION=$(echo "$BASE_VERSION" | sed 's/+.*//' | sed 's/-.*//')
+              USE_MANUAL_VERSION=false
             fi
           else
-            BASE_VERSION="$CURRENT_VERSION"
-            echo "Using package.json version as base (first publish): $BASE_VERSION"
+            echo "Using package.json version as base (first publish): $CURRENT_VERSION"
+            USE_MANUAL_VERSION=true
+            CLEAN_VERSION="$CLEAN_CURRENT"
           fi
           
-          # Extract clean version (remove build metadata and pre-release for incrementing)
-          CLEAN_VERSION=$(echo "$BASE_VERSION" | sed 's/+.*//' | sed 's/-.*//')
           echo "Clean base version for incrementing: $CLEAN_VERSION"
           
-          # Check if package.json version is explicitly set higher - if so, use it directly without incrementing
-          if [ "$CLEAN_CURRENT" != "$CLEAN_VERSION" ] && \
-             node -e "const semver = require('semver'); process.exit(semver.gt('$CLEAN_CURRENT', '$CLEAN_VERSION') ? 0 : 1)" 2>/dev/null; then
-            echo "Package.json version ($CLEAN_CURRENT) is higher than base ($CLEAN_VERSION)"
-            echo "Using package.json version directly without auto-increment (manual version override)"
-            CLEAN_VERSION="$CLEAN_CURRENT"
+          if [ "$USE_MANUAL_VERSION" = "true" ]; then
+            # Use package.json version directly without incrementing
             npm pkg set version="${CLEAN_VERSION}"
           else
             # Temporarily set clean version for npm version command
