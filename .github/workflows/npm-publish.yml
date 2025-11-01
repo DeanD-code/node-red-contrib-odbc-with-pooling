@@ -130,21 +130,60 @@ jobs:
           else
             CLEAN_PUBLISHED=$(echo "$PUBLISHED_VERSION" | sed 's/+.*//' | sed 's/-.*//')
             
-            # Use a Node.js script to properly compare versions using semver
-            # This ensures reliable version comparison
+            # Compare versions - try using npm's semver (built into npm), fallback to node with installed semver
+            # First try: use npm's built-in version comparison
+            if command -v npm &> /dev/null; then
+              # Use npm's semver comparison via node_modules/.bin/semver or install it
+              if ! npm list semver &>/dev/null; then
+                echo "Installing semver for version comparison..."
+                npm install semver --no-save --silent 2>/dev/null || true
+              fi
+            fi
+            
+            # Use Node.js with semver for reliable version comparison
             VERSION_COMPARE_RESULT=$(node -e "
-              const semver = require('semver');
-              const current = '$CLEAN_CURRENT';
-              const published = '$CLEAN_PUBLISHED';
-              
-              if (semver.gt(current, published)) {
-                console.log('HIGHER');
-              } else if (semver.eq(current, published)) {
+              try {
+                const semver = require('semver');
+                const current = '$CLEAN_CURRENT';
+                const published = '$CLEAN_PUBLISHED';
+                
+                if (semver.gt(current, published)) {
+                  console.log('HIGHER');
+                } else if (semver.eq(current, published)) {
+                  console.log('EQUAL');
+                } else {
+                  console.log('LOWER');
+                }
+              } catch(e) {
+                // Fallback: simple numeric comparison for major.minor.patch
+                const v1 = '$CLEAN_CURRENT'.split('.').map(n => parseInt(n, 10));
+                const v2 = '$CLEAN_PUBLISHED'.split('.').map(n => parseInt(n, 10));
+                for (let i = 0; i < 3; i++) {
+                  if (v1[i] > v2[i]) { console.log('HIGHER'); process.exit(0); }
+                  if (v1[i] < v2[i]) { console.log('LOWER'); process.exit(0); }
+                }
                 console.log('EQUAL');
-              } else {
-                console.log('LOWER');
               }
-            ")
+            " 2>/dev/null)
+            
+            # If that failed, try installing semver first
+            if [ -z "$VERSION_COMPARE_RESULT" ]; then
+              echo "Installing semver module..."
+              npm install semver --no-save --silent
+              VERSION_COMPARE_RESULT=$(node -e "
+                const semver = require('semver');
+                const current = '$CLEAN_CURRENT';
+                const published = '$CLEAN_PUBLISHED';
+                
+                if (semver.gt(current, published)) {
+                  console.log('HIGHER');
+                } else if (semver.eq(current, published)) {
+                  console.log('EQUAL');
+                } else {
+                  console.log('LOWER');
+                }
+              ")
+            fi
             
             echo "Version comparison: package.json ($CLEAN_CURRENT) vs published ($CLEAN_PUBLISHED) = $VERSION_COMPARE_RESULT"
             
