@@ -49,40 +49,54 @@ jobs:
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           echo "Configuring authentication for package: $PACKAGE_NAME"
           
-          # Create .npmrc file
+          # Get the npmrc file location (setup-node sets NPM_CONFIG_USERCONFIG)
+          NPMRC_FILE="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          echo "Using npmrc file: $NPMRC_FILE"
+          
+          # Create .npmrc file with proper configuration
           if [[ "$PACKAGE_NAME" == @* ]]; then
             # Extract scope from scoped package name
             PACKAGE_SCOPE=$(echo "$PACKAGE_NAME" | cut -d'/' -f1)
+            SCOPE_NAME="${PACKAGE_SCOPE#@}"
             echo "Scoped package detected: $PACKAGE_SCOPE"
             
-            # Set scope registry configuration
-            npm config set "@${PACKAGE_SCOPE#@}:registry" https://registry.npmjs.org/
+            # Configure scope registry
+            npm config set "@${SCOPE_NAME}:registry" https://registry.npmjs.org/
             
-            # Configure auth token for the scope
-            echo "${PACKAGE_SCOPE}:registry=https://registry.npmjs.org/" > ~/.npmrc
+            # Add scope registry to npmrc file
+            echo "${PACKAGE_SCOPE}:registry=https://registry.npmjs.org/" > "$NPMRC_FILE"
           else
             echo "Unscoped package detected"
-            touch ~/.npmrc
+            touch "$NPMRC_FILE"
           fi
           
           # Add authentication token
-          echo "//registry.npmjs.org/:_authToken=${{secrets.NPM_TOKEN}}" >> ~/.npmrc
+          echo "//registry.npmjs.org/:_authToken=${{secrets.NPM_TOKEN}}" >> "$NPMRC_FILE"
           
           # Verify .npmrc contents (masked)
           echo "Generated .npmrc configuration:"
-          cat ~/.npmrc | sed 's/:[^:]*$/:***/'
+          cat "$NPMRC_FILE" | sed 's/:[^:]*$/:***/'
+          
+          # Show npm config to verify
+          echo ""
+          echo "npm config list:"
+          npm config list | grep -E "(registry|@.*:registry)" || true
           
           # Verify authentication
+          echo ""
           echo "Verifying npm authentication..."
-          NPM_USER=$(npm whoami 2>&1)
-          if [ $? -eq 0 ]; then
+          if NPM_USER=$(npm whoami 2>&1); then
             echo "✓ Authenticated as: $NPM_USER"
           else
-            echo "✗ Authentication failed: $NPM_USER"
-            echo "Please verify:"
-            echo "1. NPM_TOKEN secret is correct"
-            echo "2. Token has 'publish' permissions"
-            echo "3. Token belongs to the account that owns scope: ${PACKAGE_SCOPE:-N/A}"
+            echo "✗ Authentication failed"
+            echo "Error output: $NPM_USER"
+            echo ""
+            echo "Troubleshooting steps:"
+            echo "1. Verify NPM_TOKEN secret is correct in GitHub repository settings"
+            echo "2. Ensure token has 'Automation' type with 'publish' permissions"
+            echo "3. Verify token belongs to account that owns scope: ${PACKAGE_SCOPE:-N/A}"
+            echo "4. Check npmrc file contents:"
+            cat "$NPMRC_FILE" | sed 's/:[^:]*$/:***/'
             exit 1
           fi
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
