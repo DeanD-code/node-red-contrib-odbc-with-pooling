@@ -100,27 +100,71 @@ jobs:
             exit 1
           fi
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
-      - name: Bump version for each commit
+      - name: Auto-increment version based on commits
         run: |
           # Check if this is a manual initialization (workflow_dispatch) - use base version
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "Manual workflow trigger - checking if package exists..."
             PACKAGE_NAME=$(node -p "require('./package.json').name")
             if npm view "$PACKAGE_NAME" version 2>/dev/null; then
-              echo "Package exists - will bump version"
+              echo "Package exists - will auto-increment version"
             else
               echo "Package doesn't exist - using base version for initial publish"
               exit 0  # Skip version bumping for initial publish
             fi
           fi
+          
+          # Get current version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Get the last commit message to determine version bump type
+          LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Last commit message: $LAST_COMMIT_MSG"
+          
+          # Determine version bump based on conventional commits or commit message
+          # Patterns: "fix:" or "bugfix:" = patch, "feat:" or "feature:" = minor, "BREAKING" = major
+          VERSION_BUMP="patch"  # Default to patch
+          
+          if echo "$LAST_COMMIT_MSG" | grep -qiE "^(breaking|BREAKING|major)"; then
+            VERSION_BUMP="major"
+            echo "Detected: MAJOR version bump (breaking change)"
+          elif echo "$LAST_COMMIT_MSG" | grep -qiE "^(feat|feature|add)"; then
+            VERSION_BUMP="minor"
+            echo "Detected: MINOR version bump (new feature)"
+          elif echo "$LAST_COMMIT_MSG" | grep -qiE "^(fix|bugfix|patch|bug)"; then
+            VERSION_BUMP="patch"
+            echo "Detected: PATCH version bump (bug fix)"
+          else
+            # If no conventional commit pattern, default to patch or use build metadata
+            echo "No conventional commit pattern found, using build metadata instead"
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            NEW_VERSION="${CURRENT_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
+            npm pkg set version="${NEW_VERSION}"
+            echo "New version: $NEW_VERSION"
+            exit 0
+          fi
+          
+          # Extract base version (remove any build metadata or pre-release identifiers for incrementing)
+          BASE_VERSION=$(echo "$CURRENT_VERSION" | sed 's/+.*//' | sed 's/-.*//')
+          
+          # Temporarily set clean version for npm version command
+          npm pkg set version="${BASE_VERSION}"
+          
+          # Increment version using npm version (but don't commit to git)
+          npm version "$VERSION_BUMP" --no-git-tag-version
+          
+          # Get the new version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "Version bumped from $CURRENT_VERSION to $NEW_VERSION"
+          
+          # Optionally add build metadata
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
           SHORT_SHA=$(git rev-parse --short HEAD)
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          # Use build metadata (after +) for timestamp and commit SHA
-          # Format: existing-version+build.timestamp.sha (e.g., 1-beta.0+build.20241031183037.abc1234)
-          # This preserves the existing version while adding unique build info
-          NEW_VERSION="${CURRENT_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
-          npm pkg set version="${NEW_VERSION}"
+          VERSION_WITH_BUILD="${NEW_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
+          npm pkg set version="${VERSION_WITH_BUILD}"
+          echo "Final version with build metadata: $VERSION_WITH_BUILD"
       - run: npm install
       - name: Verify package info and access
         run: |
