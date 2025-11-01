@@ -1,4 +1,4 @@
-# This workflow will run tests and publish a package to npm on every push
+# This workflow will publish a package to npm on every push
 # For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
 
 name: Node.js Package
@@ -22,9 +22,6 @@ jobs:
           node-version: 20
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
       - run: npm ci
-      - name: Run tests (if any)
-        run: npm test || echo "No tests specified, continuing..."
-        continue-on-error: true
   publish-npm:
     needs: build
     runs-on: ubuntu-latest

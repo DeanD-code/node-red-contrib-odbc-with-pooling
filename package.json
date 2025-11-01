@@ -5,7 +5,7 @@
   "keywords": [ "node-red", "odbc" ],
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "mocha \"test/**/*_spec.js\" --timeout 10000",
     "postinstall": "node scripts/check-odbc.js"
   },
   "node-red": {
@@ -29,5 +29,11 @@
   "homepage": "https://github.com/DeanD-code/node-red-contrib-odbc#readme",
   "dependencies": {
     "odbc": "^2.3.4"
+  },
+  "devDependencies": {
+    "node-red-node-test-helper": "^0.3.1",
+    "mocha": "^10.2.0",
+    "sinon": "^17.0.1",
+    "should": "^13.2.3"
   }
 }
