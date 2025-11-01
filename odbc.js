@@ -26,8 +26,8 @@ module.exports = function(RED) {
       connectionString: config.connectionString
     };
     
-    // Handle numeric pool settings
-    const numericSettings = ['initialSize', 'incrementSize', 'maxSize', 'connectionTimeout', 'loginTimeout'];
+    // Handle numeric pool settings - but exclude connectionTimeout as we implement it separately
+    const numericSettings = ['initialSize', 'incrementSize', 'maxSize', 'loginTimeout'];
     numericSettings.forEach(setting => {
       if (config[setting] !== undefined && config[setting] !== null && config[setting] !== '') {
         const numValue = Number(config[setting]);
@@ -41,9 +41,61 @@ module.exports = function(RED) {
     if (config.shrinkPool !== undefined && config.shrinkPool !== null) {
       this.poolConfig.shrinkPool = config.shrinkPool;
     }
+
+    // Store connectionTimeout separately for idle timeout handling (in seconds)
+    this.connectionTimeout = undefined;
+    if (config.connectionTimeout !== undefined && config.connectionTimeout !== null && config.connectionTimeout !== '') {
+      const numValue = Number(config.connectionTimeout);
+      if (!isNaN(numValue) && numValue > 0) {
+        this.connectionTimeout = numValue * 1000; // Convert to milliseconds
+      }
+    }
     
     this.pool = null;
     this.connecting = false;
+    this.activeConnections = new Map(); // Track connections and their last usage time
+    this.cleanupInterval = null;
+
+    // Cleanup function to close idle connections
+    this.cleanupIdleConnections = () => {
+      if (!this.pool || !this.connectionTimeout) {
+        return;
+      }
+
+      const now = Date.now();
+      const connectionsToClose = [];
+
+      // Check all active connections
+      for (const [connection, lastUsed] of this.activeConnections.entries()) {
+        const idleTime = now - lastUsed;
+        if (idleTime >= this.connectionTimeout) {
+          connectionsToClose.push(connection);
+        }
+      }
+
+      // Close idle connections
+      connectionsToClose.forEach(connection => {
+        try {
+          if (connection && typeof connection.close === 'function') {
+            connection.close().catch(err => {
+              // Ignore errors when closing idle connections
+            });
+          }
+          this.activeConnections.delete(connection);
+        } catch (error) {
+          // Ignore errors when closing idle connections
+          this.activeConnections.delete(connection);
+        }
+      });
+    };
+
+    // Start cleanup interval if connectionTimeout is set
+    if (this.connectionTimeout) {
+      // Check every second for idle connections
+      this.cleanupInterval = setInterval(() => {
+        this.cleanupIdleConnections();
+      }, 1000);
+    }
 
     this.connect = async () => {
 
@@ -60,12 +112,66 @@ module.exports = function(RED) {
 
       try {
         connection = await this.pool.connect();
+        // Track this connection and update its last usage time
+        const poolNode = this;
+        this.activeConnections.set(connection, Date.now());
+
+        // Update last usage time whenever connection is used
+        const updateLastUsed = () => {
+          if (poolNode.activeConnections.has(connection)) {
+            poolNode.activeConnections.set(connection, Date.now());
+          }
+        };
+
+        // Wrap the connection's close method to remove it from tracking
+        const originalClose = connection.close.bind(connection);
+        connection.close = async function() {
+          // Remove from active connections tracking
+          poolNode.activeConnections.delete(connection);
+          return originalClose();
+        };
+
+        // Wrap common connection methods to update last used time
+        if (connection.query) {
+          const originalQuery = connection.query.bind(connection);
+          connection.query = function(...args) {
+            updateLastUsed();
+            return originalQuery(...args);
+          };
+        }
+
+        if (connection.callProcedure) {
+          const originalCallProcedure = connection.callProcedure.bind(connection);
+          connection.callProcedure = function(...args) {
+            updateLastUsed();
+            return originalCallProcedure(...args);
+          };
+        }
       } catch (error) {
         throw(error);
       }
 
       return connection;
     }
+
+    // Cleanup on node close
+    this.on('close', () => {
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+        this.cleanupInterval = null;
+      }
+      // Close all active connections
+      for (const connection of this.activeConnections.keys()) {
+        try {
+          if (connection && typeof connection.close === 'function') {
+            connection.close().catch(() => {});
+          }
+        } catch (error) {
+          // Ignore errors
+        }
+      }
+      this.activeConnections.clear();
+    });
   }
   
   RED.nodes.registerType('ODBC pool', odbcPool);
