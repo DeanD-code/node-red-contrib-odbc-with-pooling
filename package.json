@@ -1,11 +1,12 @@
 {
-  "name": "node-red-contrib-odbc-with-pooling",
+  "name": "@deand-code-engine/node-red-contrib-odbc-with-pooling",
   "version": "1.0.0-beta.0",
   "description": "Node-RED node for making ODBC connections",
   "keywords": [ "node-red", "odbc" ],
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "node scripts/check-odbc.js"
   },
   "node-red": {
     "nodes": {

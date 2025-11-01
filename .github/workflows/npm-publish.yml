@@ -11,6 +11,7 @@ on:
       - 'v*'
   release:
     types: [created]
+  workflow_dispatch:  # Allows manual trigger from GitHub Actions UI
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -37,10 +38,23 @@ jobs:
           registry-url: https://registry.npmjs.org/
       - name: Configure npm authentication
         run: |
+          npm config set registry https://registry.npmjs.org/
           echo "//registry.npmjs.org/:_authToken=${{secrets.npm_token}}" > ~/.npmrc
+          cat ~/.npmrc | sed 's/:[^:]*$/:***/'  # Show config without exposing token
       - run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
       - name: Bump version for each commit
         run: |
+          # Check if this is a manual initialization (workflow_dispatch) - use base version
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual workflow trigger - checking if package exists..."
+            PACKAGE_NAME=$(node -p "require('./package.json').name")
+            if npm view "$PACKAGE_NAME" version 2>/dev/null; then
+              echo "Package exists - will bump version"
+            else
+              echo "Package doesn't exist - using base version for initial publish"
+              exit 0  # Skip version bumping for initial publish
+            fi
+          fi
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
           SHORT_SHA=$(git rev-parse --short HEAD)
           CURRENT_VERSION=$(node -p "require('./package.json').version")
@@ -50,4 +64,31 @@ jobs:
           NEW_VERSION="${CURRENT_VERSION}+build.${TIMESTAMP}.${SHORT_SHA}"
           npm pkg set version="${NEW_VERSION}"
       - run: npm install
-      - run: npm publish --access public
+      - name: Verify npm authentication and package info
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          echo "Package name: $PACKAGE_NAME"
+          echo "Package version: $PACKAGE_VERSION"
+          echo "Authenticated as: $(npm whoami)"
+          echo "Checking if package exists..."
+          if npm view "$PACKAGE_NAME" version 2>/dev/null; then
+            echo "Package already exists on npm. Checking if you have publish access..."
+            npm access ls-packages 2>/dev/null | grep -q "$PACKAGE_NAME" && echo "You have access" || echo "WARNING: Package exists but you may not have access"
+          else
+            echo "Package name is available (first publish)"
+          fi
+      - name: Publish to npm
+        run: |
+          # Try to publish, but handle the case where package doesn't exist (first publish)
+          npm publish --access public || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 1 ]; then
+              echo "Publish failed. Common causes:"
+              echo "1. Package name might be taken by another account"
+              echo "2. npm token might not have publish permissions"
+              echo "3. Authentication issue - verify npm_token secret is correct"
+              exit $EXIT_CODE
+            fi
+            exit $EXIT_CODE
+          }
