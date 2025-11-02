@@ -65,22 +65,25 @@ module.exports = function(RED) {
       const now = Date.now();
       const connectionsToClose = [];
 
-      // Check all active connections
+      // Check all tracked connections
       for (const [connection, lastUsed] of this.activeConnections.entries()) {
         const idleTime = now - lastUsed;
         if (idleTime >= this.closeConnectionIdleTime) {
-          connectionsToClose.push(connection);
+          connectionsToClose.push({connection, lastUsed});
         }
       }
 
       // Close idle connections
-      connectionsToClose.forEach(connection => {
+      connectionsToClose.forEach(({connection}) => {
         try {
           if (connection && typeof connection.close === 'function') {
+            // Try to close the connection - if it's currently checked out, this might fail
+            // but we catch errors, so that's okay
             connection.close().catch(err => {
-              // Ignore errors when closing idle connections
+              // Connection might be in use, or already closed - that's fine
             });
           }
+          // Remove from tracking after attempting to close
           this.activeConnections.delete(connection);
         } catch (error) {
           // Ignore errors when closing idle connections
@@ -88,14 +91,6 @@ module.exports = function(RED) {
         }
       });
     };
-
-    // Start cleanup interval if closeConnectionIdleTime is set
-    if (this.closeConnectionIdleTime) {
-      // Check every second for idle connections
-      this.cleanupInterval = setInterval(() => {
-        this.cleanupIdleConnections();
-      }, 1000);
-    }
 
     this.connect = async () => {
 
@@ -109,12 +104,39 @@ module.exports = function(RED) {
           throw(error);
         }
       }
+      
+      // Ensure cleanup interval is started if closeConnectionIdleTime is set
+      // (in case pool was created before or interval was cleared)
+      if (this.closeConnectionIdleTime && !this.cleanupInterval) {
+        // Check every second for idle connections
+        this.cleanupInterval = setInterval(() => {
+          this.cleanupIdleConnections();
+        }, 1000);
+      }
 
       try {
         connection = await this.pool.connect();
-        // Track this connection and update its last usage time
+        
+        // Check if this connection was previously tracked and is too old
         const poolNode = this;
-        this.activeConnections.set(connection, Date.now());
+        const now = Date.now();
+        if (poolNode.activeConnections.has(connection)) {
+          const lastUsed = poolNode.activeConnections.get(connection);
+          if (poolNode.closeConnectionIdleTime && (now - lastUsed) >= poolNode.closeConnectionIdleTime) {
+            // Connection has been idle too long, close it and get a new one
+            try {
+              await connection.close();
+            } catch (e) {
+              // Ignore close errors
+            }
+            poolNode.activeConnections.delete(connection);
+            // Get a new connection
+            connection = await poolNode.pool.connect();
+          }
+        }
+        
+        // Track this connection and update its last usage time
+        this.activeConnections.set(connection, now);
 
         // Update last usage time whenever connection is used
         const updateLastUsed = () => {
@@ -123,11 +145,13 @@ module.exports = function(RED) {
           }
         };
 
-        // Wrap the connection's close method to remove it from tracking
+        // Wrap the connection's close method - DON'T remove from tracking
+        // We keep tracking even after close() so we can close idle connections
         const originalClose = connection.close.bind(connection);
         connection.close = async function() {
-          // Remove from active connections tracking
-          poolNode.activeConnections.delete(connection);
+          // Update last used time when returned to pool (not remove from tracking)
+          // This way we can track how long it's been idle in the pool
+          updateLastUsed();
           return originalClose();
         };
 
