@@ -269,13 +269,16 @@ module.exports = function(RED) {
         poolNode.activeConnections.set(connection, now);
         console.log(`[ODBC Pool] New connection tracked at ${new Date(now).toISOString()}`);
       } else if (poolNode.activeConnections.has(connection)) {
-        // Connection is still valid, update its last used time
-        poolNode.activeConnections.set(connection, now);
-        console.log(`[ODBC Pool] Updated lastUsed for existing connection: ${new Date(now).toISOString()}`);
-        // Remove from close list if it was there (connection was reused before timeout)
+        // Connection is already tracked - DON'T update lastUsed here!
+        // We only update lastUsed when the connection is actually used (query/procedure)
+        // This preserves the idle time so we can detect idle connections
+        const existingLastUsed = poolNode.activeConnections.get(connection);
+        const existingIdleTime = ((now - existingLastUsed) / 1000).toFixed(2);
+        console.log(`[ODBC Pool] Connection already tracked. Last used: ${new Date(existingLastUsed).toISOString()}, idle: ${existingIdleTime}s. Keeping timestamp.`);
+        // Remove from close list if it was there (connection was reused, but we'll check on actual use)
         if (poolNode.connectionsToClose.has(connection)) {
           poolNode.connectionsToClose.delete(connection);
-          console.log(`[ODBC Pool] Removed connection from close list (reused before timeout)`);
+          console.log(`[ODBC Pool] Removed connection from close list (will be checked on actual use)`);
         }
       } else {
         // New connection, track it
@@ -283,14 +286,24 @@ module.exports = function(RED) {
         console.log(`[ODBC Pool] New connection tracked at ${new Date(now).toISOString()}`);
       }
 
-      // Update last usage time whenever connection is used
+      // Update last usage time whenever connection is used (query/procedure)
+      // This is the ONLY place we update lastUsed for actual usage
       const updateLastUsed = () => {
+        const newTime = Date.now();
         if (poolNode.activeConnections.has(connection)) {
-          const newTime = Date.now();
+          const oldLastUsed = poolNode.activeConnections.get(connection);
           poolNode.activeConnections.set(connection, newTime);
-          console.log(`[ODBC Pool] Updated lastUsed for connection (used): ${new Date(newTime).toISOString()}`);
+          const oldIdle = ((newTime - oldLastUsed) / 1000).toFixed(2);
+          console.log(`[ODBC Pool] Updated lastUsed for connection (actually used): ${new Date(newTime).toISOString()}, was idle ${oldIdle}s`);
         } else {
-          console.log(`[ODBC Pool] Warning: updateLastUsed called but connection not in tracking`);
+          // Connection not in tracking, add it
+          poolNode.activeConnections.set(connection, newTime);
+          console.log(`[ODBC Pool] Added connection to tracking on first use: ${new Date(newTime).toISOString()}`);
+        }
+        // Remove from close list since connection is being used
+        if (poolNode.connectionsToClose.has(connection)) {
+          poolNode.connectionsToClose.delete(connection);
+          console.log(`[ODBC Pool] Removed connection from close list (now being used)`);
         }
       };
 
