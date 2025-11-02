@@ -1,7 +1,7 @@
 {
   "name": "@deand-code-engine/node-red-contrib-odbc-with-pooling",
   "version": "2.1.0",
-  "description": "Node-RED node for making ODBC connections",
+  "description": "Node-RED node for making ODBC connections With Connection Pooling and Closing Idle Connections",
   "keywords": [ "node-red", "odbc" ],
   "main": "index.js",
   "scripts": {

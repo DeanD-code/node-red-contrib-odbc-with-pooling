@@ -230,7 +230,7 @@ module.exports = function(RED) {
     });
   }
   
-  RED.nodes.registerType('ODBC pool', odbcPool);
+  RED.nodes.registerType('odbc-pooling-pool', odbcPool);
 
   function odbcQuery(config) {
     RED.nodes.createNode(this, config);
@@ -324,7 +324,7 @@ module.exports = function(RED) {
     this.status({fill: 'green', shape: 'dot', text: 'ready'});
   }
 
-  RED.nodes.registerType("ODBC query", odbcQuery);
+  RED.nodes.registerType("odbc-pooling-query", odbcQuery);
 
   function odbcProcedure(config) {
     RED.nodes.createNode(this, config);
@@ -445,5 +445,5 @@ module.exports = function(RED) {
     this.on('input', this.runProcedure);
   }
 
-  RED.nodes.registerType("ODBC procedure", odbcProcedure);
+  RED.nodes.registerType("odbc-pooling-procedure", odbcProcedure);
 }

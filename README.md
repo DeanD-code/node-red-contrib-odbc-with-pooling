@@ -76,7 +76,7 @@ For additional `odbc` connector requirements, please see [the documentation for 
 ---
 ## Usage
 
-`node-red-contrib-odbc` provides three nodes:
+`node-red-contrib-odbc-with-pooling` provides three nodes:
 
 * **`ODBC pool`**: A configuration node for defining your connection string and managing your connections
 * **`ODBC query`**: A node for running queries with or without parameters
@@ -119,6 +119,9 @@ A configuration node that manages connections in an `odbc.Pool` object. [Can tak
 * (optional) **`loginTimeout`**: <`number`>
 
   The number of seconds for an attempt to create a connection before returning to the application
+
+* (optional) **`closeConnectionIdleTime`**: <`number`>
+  The number of seconds for the pool not to receive requests before closing the pool connections. New connection will be made on next request. This is ideal for when there is polling an the requests are made once an hour etc as the connections close until needed.
 
 ### `ODBC query`
 

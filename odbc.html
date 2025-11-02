@@ -15,7 +15,7 @@ limitations under the License.
 -->
 
 <script type="text/javascript">
-  RED.nodes.registerType('ODBC pool',{
+  RED.nodes.registerType('odbc-pooling-pool',{
     category: 'config',
     defaults: {
       connectionString: {value:"", required:true},
@@ -29,12 +29,12 @@ limitations under the License.
       closeConnectionIdleTime: {value:""}
     },
     label: function() {
-      return this.name || 'ODBC pool';
+      return this.name || 'ODBC Pool (Pooling)';
     }
   });
 </script>
 
-<script type="text/x-red" data-template-name="ODBC pool">
+<script type="text/x-red" data-template-name="odbc-pooling-pool">
   <div class="form-row">
     <label for="node-config-input-connectionString"><i class="icon-bookmark"></i>Connection String</label>
     <input type="text" id="node-config-input-connectionString" placeholder="DSN=...;">
@@ -77,12 +77,12 @@ limitations under the License.
 </script>
 
 <script type="text/javascript">    
-  RED.nodes.registerType('ODBC query',{
+  RED.nodes.registerType('odbc-pooling-query',{
   category: 'storage',
   color: '#78a9ff',
   defaults: {
       name: {value:""},
-      connection: {type:"ODBC pool", required:true},
+      connection: {type:"odbc-pooling-pool", required:true},
       query: {value: ""},
       parameters: {value: ""},
       outField: {value:"payload"}
@@ -90,9 +90,9 @@ limitations under the License.
   inputs:1,
   outputs:1,
   icon: "db.png",
-  label: function() {
-      return this.name||"odbc";
-  },
+    label: function() {
+      return this.name||"ODBC Query (Pooling)";
+    },
   oneditprepare: function() {
     this.editor = RED.editor.createEditor({
       id: 'node-input-query-editor',
@@ -112,7 +112,7 @@ limitations under the License.
 });
 </script>
 
-<script type="text/x-red" data-template-name="ODBC query">
+<script type="text/x-red" data-template-name="odbc-pooling-query">
   <div class="form-row">
     <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
     <input type="text" id="node-input-name">
@@ -137,7 +137,7 @@ limitations under the License.
   </div>
 </script>
 
-<script type="text/x-red" data-help-name="ODBC query">
+<script type="text/x-red" data-help-name="odbc-pooling-query">
   <p>Node for running ODBC queries.</p>
   <h3>Inputs</h3>
     <dl class="message-properties">
@@ -164,12 +164,12 @@ limitations under the License.
 
 
 <script type="text/javascript">    
-    RED.nodes.registerType('ODBC procedure',{
+    RED.nodes.registerType('odbc-pooling-procedure',{
     category: 'storage',
     color: '#78a9ff',
     defaults: {
         name: {value:""},
-        connection: {type:"ODBC pool", required:true},
+        connection: {type:"odbc-pooling-pool", required:true},
         catalog: {value: ""},
         schema: {value: ""},
         procedure: {value: ""},
@@ -180,12 +180,12 @@ limitations under the License.
     outputs:1,
     icon: "db.png",
     label: function() {
-        return this.name||"odbc";
+        return this.name||"ODBC Procedure (Pooling)";
     }
   });
   </script>
   
-  <script type="text/x-red" data-template-name="ODBC procedure">
+  <script type="text/x-red" data-template-name="odbc-pooling-procedure">
     <div class="form-row">
       <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
       <input type="text" id="node-input-name">
@@ -218,7 +218,7 @@ limitations under the License.
     </div>
   </script>
   
-  <script type="text/x-red" data-help-name="ODBC procedure">
+  <script type="text/x-red" data-help-name="odbc-pooling-procedure">
     <p>Node for calling ODBC procedures.</p>
     <h3>Inputs</h3>
       <dl class="message-properties">
