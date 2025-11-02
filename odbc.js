@@ -26,8 +26,8 @@ module.exports = function(RED) {
       connectionString: config.connectionString
     };
     
-    // Handle numeric pool settings - but exclude connectionTimeout as we implement it separately
-    const numericSettings = ['initialSize', 'incrementSize', 'maxSize', 'loginTimeout'];
+    // Handle numeric pool settings
+    const numericSettings = ['initialSize', 'incrementSize', 'maxSize', 'connectionTimeout', 'loginTimeout'];
     numericSettings.forEach(setting => {
       if (config[setting] !== undefined && config[setting] !== null && config[setting] !== '') {
         const numValue = Number(config[setting]);
@@ -42,12 +42,12 @@ module.exports = function(RED) {
       this.poolConfig.shrinkPool = config.shrinkPool;
     }
 
-    // Store connectionTimeout separately for idle timeout handling (in seconds)
-    this.connectionTimeout = undefined;
-    if (config.connectionTimeout !== undefined && config.connectionTimeout !== null && config.connectionTimeout !== '') {
-      const numValue = Number(config.connectionTimeout);
+    // Store CloseConnectionIdleTime separately for idle timeout handling (in seconds)
+    this.closeConnectionIdleTime = undefined;
+    if (config.closeConnectionIdleTime !== undefined && config.closeConnectionIdleTime !== null && config.closeConnectionIdleTime !== '') {
+      const numValue = Number(config.closeConnectionIdleTime);
       if (!isNaN(numValue) && numValue > 0) {
-        this.connectionTimeout = numValue * 1000; // Convert to milliseconds
+        this.closeConnectionIdleTime = numValue * 1000; // Convert to milliseconds
       }
     }
     
@@ -58,7 +58,7 @@ module.exports = function(RED) {
 
     // Cleanup function to close idle connections
     this.cleanupIdleConnections = () => {
-      if (!this.pool || !this.connectionTimeout) {
+      if (!this.pool || !this.closeConnectionIdleTime) {
         return;
       }
 
@@ -68,7 +68,7 @@ module.exports = function(RED) {
       // Check all active connections
       for (const [connection, lastUsed] of this.activeConnections.entries()) {
         const idleTime = now - lastUsed;
-        if (idleTime >= this.connectionTimeout) {
+        if (idleTime >= this.closeConnectionIdleTime) {
           connectionsToClose.push(connection);
         }
       }
@@ -89,8 +89,8 @@ module.exports = function(RED) {
       });
     };
 
-    // Start cleanup interval if connectionTimeout is set
-    if (this.connectionTimeout) {
+    // Start cleanup interval if closeConnectionIdleTime is set
+    if (this.closeConnectionIdleTime) {
       // Check every second for idle connections
       this.cleanupInterval = setInterval(() => {
         this.cleanupIdleConnections();
@@ -251,15 +251,45 @@ module.exports = function(RED) {
       try {
         result = await connection.query(this.queryString, parameters);
       } catch (error) {
-        this.error(error);
-        this.status({fill: "red", shape: "ring", text: error.message});
-        connection.close();
-        if (done) {
-          // Node-RED 1.0 compatible
-          done(error);
+        // Check if connection was closed (common error messages for closed connections)
+        const isConnectionClosed = error.message && (
+          error.message.toLowerCase().includes('connection closed') ||
+          error.message.toLowerCase().includes('not connected') ||
+          error.message.toLowerCase().includes('connection does not exist') ||
+          error.message.toLowerCase().includes('invalid connection') ||
+          error.code === 'IM001' ||
+          error.sqlState === '08003' // Connection does not exist
+        );
+
+        if (isConnectionClosed) {
+          // Try to get a new connection and retry the query
+          try {
+            connection.close().catch(() => {}); // Close the old connection
+            connection = await this.poolNode.connect();
+            result = await connection.query(this.queryString, parameters);
+          } catch (retryError) {
+            this.error(retryError);
+            this.status({fill: "red", shape: "ring", text: retryError.message});
+            connection.close().catch(() => {});
+            if (done) {
+              done(retryError);
+            } else {
+              node.error(retryError, message);
+            }
+            return;
+          }
         } else {
-          // Node-RED 0.x compatible
-          node.error(error, message);
+          this.error(error);
+          this.status({fill: "red", shape: "ring", text: error.message});
+          connection.close();
+          if (done) {
+            // Node-RED 1.0 compatible
+            done(error);
+          } else {
+            // Node-RED 0.x compatible
+            node.error(error, message);
+          }
+          return;
         }
       }
 
@@ -407,15 +437,47 @@ module.exports = function(RED) {
       try {
         result = await connection.callProcedure(catalog, schema, procedure, parameters);
       } catch (error) {
-        this.error(error);
-        this.status({fill: "red", shape: "ring", text: error.odbcErrors[0].message});
-        connection.close();
-        if (done) {
-          // Node-RED 1.0 compatible
-          done(error);
+        // Check if connection was closed (common error messages for closed connections)
+        const errorMessage = error.odbcErrors && error.odbcErrors[0] ? error.odbcErrors[0].message : error.message;
+        const isConnectionClosed = errorMessage && (
+          errorMessage.toLowerCase().includes('connection closed') ||
+          errorMessage.toLowerCase().includes('not connected') ||
+          errorMessage.toLowerCase().includes('connection does not exist') ||
+          errorMessage.toLowerCase().includes('invalid connection') ||
+          error.code === 'IM001' ||
+          error.sqlState === '08003' // Connection does not exist
+        );
+
+        if (isConnectionClosed) {
+          // Try to get a new connection and retry the procedure call
+          try {
+            connection.close().catch(() => {}); // Close the old connection
+            connection = await this.poolNode.connect();
+            result = await connection.callProcedure(catalog, schema, procedure, parameters);
+          } catch (retryError) {
+            const retryErrorMessage = retryError.odbcErrors && retryError.odbcErrors[0] ? retryError.odbcErrors[0].message : retryError.message;
+            this.error(retryError);
+            this.status({fill: "red", shape: "ring", text: retryErrorMessage});
+            connection.close().catch(() => {});
+            if (done) {
+              done(retryError);
+            } else {
+              node.error(retryError, message);
+            }
+            return;
+          }
         } else {
-          // Node-RED 0.x compatible
-          node.error(error, message);
+          this.error(error);
+          this.status({fill: "red", shape: "ring", text: errorMessage});
+          connection.close();
+          if (done) {
+            // Node-RED 1.0 compatible
+            done(error);
+          } else {
+            // Node-RED 0.x compatible
+            node.error(error, message);
+          }
+          return;
         }
       }
 

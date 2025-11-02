@@ -25,7 +25,8 @@ limitations under the License.
       maxSize: {value:""},
       shrinkPool: {value:false},
       connectionTimeout: {value:""},
-      loginTimeout: {value:""}
+      loginTimeout: {value:""},
+      closeConnectionIdleTime: {value:""}
     },
     label: function() {
       return this.name || 'ODBC pool';
@@ -67,6 +68,11 @@ limitations under the License.
   <div class="form-row">
     <label for="node-config-input-loginTimeout"><i class="icon-bookmark"></i>Login Timeout</label>
     <input type="number" id="node-config-input-loginTimeout" placeholder="10">
+  </div>
+
+  <div class="form-row">
+    <label for="node-config-input-closeConnectionIdleTime"><i class="icon-bookmark"></i>Close Connection Idle Time (seconds)</label>
+    <input type="number" id="node-config-input-closeConnectionIdleTime" placeholder="60">
   </div>
 </script>
 
