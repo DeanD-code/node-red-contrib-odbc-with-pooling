@@ -96,11 +96,19 @@ module.exports = function(RED) {
 
       let connection;
 
+      // If pool is null, create a new one
+      // This handles the case where the flow was restarted or pool was closed
       if (this.pool == null) {
+        // Clear any stale connection tracking
+        this.activeConnections.clear();
+        
         try {
           this.pool = await odbc.pool(this.poolConfig);
           this.connecting = false;
         } catch (error) {
+          // If pool creation fails, ensure state is clean
+          this.pool = null;
+          this.connecting = false;
           throw(error);
         }
       }
@@ -116,7 +124,25 @@ module.exports = function(RED) {
 
       try {
         connection = await this.pool.connect();
-        
+      } catch (connectError) {
+        // If connection fails, pool might be invalid - reset and retry
+        const errorMessage = connectError.message || '';
+        if (errorMessage.includes('closed') || errorMessage.includes('invalid') || 
+            connectError.code === 'IM001' || connectError.sqlState === '08003') {
+          // Pool appears invalid, reset it
+          try {
+            await this.closePool();
+            this.pool = await odbc.pool(this.poolConfig);
+            connection = await this.pool.connect();
+          } catch (retryError) {
+            throw(retryError);
+          }
+        } else {
+          throw(connectError);
+        }
+      }
+      
+      try {
         // Check if this connection was previously tracked and is too old
         const poolNode = this;
         const now = Date.now();
@@ -178,23 +204,46 @@ module.exports = function(RED) {
       return connection;
     }
 
-    // Cleanup on node close
-    this.on('close', () => {
+    // Method to close and reset the pool
+    this.closePool = async () => {
       if (this.cleanupInterval) {
         clearInterval(this.cleanupInterval);
         this.cleanupInterval = null;
       }
-      // Close all active connections
+      
+      // Close all tracked connections
       for (const connection of this.activeConnections.keys()) {
         try {
           if (connection && typeof connection.close === 'function') {
-            connection.close().catch(() => {});
+            await connection.close().catch(() => {});
           }
         } catch (error) {
           // Ignore errors
         }
       }
       this.activeConnections.clear();
+      
+      // Try to close the pool if it has a close method
+      if (this.pool) {
+        try {
+          if (typeof this.pool.close === 'function') {
+            await this.pool.close().catch(() => {});
+          } else if (typeof this.pool.disconnect === 'function') {
+            await this.pool.disconnect().catch(() => {});
+          }
+        } catch (error) {
+          // Ignore errors - pool might not have a close method
+        }
+      }
+      
+      // Reset pool state
+      this.pool = null;
+      this.connecting = false;
+    };
+
+    // Cleanup on node close
+    this.on('close', () => {
+      this.closePool().catch(() => {});
     });
   }
   
