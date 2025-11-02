@@ -59,35 +59,68 @@ module.exports = function(RED) {
     // Set to track connections that should be closed when checked out
     this.connectionsToClose = new Set();
 
-    // Cleanup function to mark idle connections for closure
-    this.cleanupIdleConnections = () => {
+    // Cleanup function to close idle connections
+    this.cleanupIdleConnections = async () => {
       if (!this.pool || !this.closeConnectionIdleTime) {
         return;
       }
 
       const now = Date.now();
+      const idleConnections = [];
 
-      // Check all tracked connections
+      // Check all tracked connections to find idle ones
       for (const [connection, lastUsed] of this.activeConnections.entries()) {
         const idleTime = now - lastUsed;
         if (idleTime >= this.closeConnectionIdleTime) {
-          // Mark connection for closure - it will be closed when checked out
-          // or we'll try to close it if it's currently checked out
-          this.connectionsToClose.add(connection);
+          idleConnections.push(connection);
+        }
+      }
+
+      // For each idle connection:
+      // 1. Mark it for closure (so it gets closed when checked out)
+      // 2. Try to close it if it's currently checked out
+      // 3. Try to actively check it out from pool and close it
+      for (const trackedConnection of idleConnections) {
+        try {
+          // Mark for closure
+          this.connectionsToClose.add(trackedConnection);
           
-          // Try to close it if it's currently checked out (not in pool)
-          // If it's in the pool, we'll close it when it's checked out next time
-          try {
-            if (connection && typeof connection.close === 'function') {
-              // This will only work if connection is checked out
-              // If it's in the pool, it will fail silently and we'll handle it on checkout
-              connection.close().catch(() => {
-                // Connection is likely in pool - that's fine, we'll close it on checkout
-              });
+          // Try to close if currently checked out
+          if (trackedConnection && typeof trackedConnection.close === 'function') {
+            try {
+              await trackedConnection.close();
+              // Successfully closed (was checked out)
+              this.activeConnections.delete(trackedConnection);
+              this.connectionsToClose.delete(trackedConnection);
+            } catch (err) {
+              // Connection is in pool - try to check it out and close it
+              // This is a workaround: we check out a connection to see if it's our idle one
+              try {
+                const testConnection = await this.pool.connect();
+                // Check if this is the idle connection
+                if (testConnection === trackedConnection || 
+                    this.activeConnections.has(testConnection)) {
+                  const testLastUsed = this.activeConnections.get(testConnection);
+                  if (testLastUsed && (now - testLastUsed) >= this.closeConnectionIdleTime) {
+                    // This connection is idle, close it
+                    await testConnection.close();
+                    this.activeConnections.delete(testConnection);
+                    this.connectionsToClose.delete(testConnection);
+                  } else {
+                    // Not idle, return it
+                    await testConnection.close();
+                  }
+                } else {
+                  // Different connection, return it
+                  await testConnection.close();
+                }
+              } catch (checkoutErr) {
+                // Couldn't check out - pool might be busy, that's okay
+              }
             }
-          } catch (error) {
-            // Connection might be in pool - that's fine
           }
+        } catch (error) {
+          // Ignore errors
         }
       }
     };
@@ -117,9 +150,12 @@ module.exports = function(RED) {
       // (in case pool was created before or interval was cleared)
       if (this.closeConnectionIdleTime && !this.cleanupInterval) {
         // Check every second for idle connections
+        // Use a shorter interval for more responsive cleanup
+        const checkInterval = Math.min(1000, this.closeConnectionIdleTime / 2);
         this.cleanupInterval = setInterval(() => {
-          this.cleanupIdleConnections();
-        }, 1000);
+          // Call async function without await (fire and forget)
+          this.cleanupIdleConnections().catch(() => {});
+        }, checkInterval);
       }
 
       try {
@@ -146,41 +182,39 @@ module.exports = function(RED) {
       const poolNode = this;
       const now = Date.now();
       
-      // Check if this connection was marked for closure (was idle too long)
+      // Check if this connection should be closed due to idle timeout
+      let shouldClose = false;
+      
       if (poolNode.connectionsToClose.has(connection)) {
+        // Connection was marked for closure
+        shouldClose = true;
+      } else if (poolNode.activeConnections.has(connection)) {
+        // Connection was previously tracked, check if it's idle too long
+        const lastUsed = poolNode.activeConnections.get(connection);
+        if (poolNode.closeConnectionIdleTime && (now - lastUsed) >= poolNode.closeConnectionIdleTime) {
+          shouldClose = true;
+        }
+      }
+      
+      if (shouldClose) {
         // Connection was idle too long, close it and get a new one
         try {
           await connection.close();
         } catch (e) {
-          // Ignore close errors
+          // Ignore close errors - connection might already be closed or in pool
         }
         poolNode.activeConnections.delete(connection);
         poolNode.connectionsToClose.delete(connection);
         // Get a new connection and track it
         connection = await poolNode.pool.connect();
         // Update tracking for the new connection
-        poolNode.activeConnections.set(connection, Date.now());
+        now = Date.now();
+        poolNode.activeConnections.set(connection, now);
       } else if (poolNode.activeConnections.has(connection)) {
-        // Connection was previously tracked, check if it's still valid
-        const lastUsed = poolNode.activeConnections.get(connection);
-        if (poolNode.closeConnectionIdleTime && (now - lastUsed) >= poolNode.closeConnectionIdleTime) {
-          // Connection has been idle too long, close it and get a new one
-          try {
-            await connection.close();
-          } catch (e) {
-            // Ignore close errors
-          }
-          poolNode.activeConnections.delete(connection);
-          poolNode.connectionsToClose.delete(connection);
-          // Get a new connection and track it
-          connection = await poolNode.pool.connect();
-          poolNode.activeConnections.set(connection, Date.now());
-        } else {
-          // Connection is still valid, update its last used time
-          poolNode.activeConnections.set(connection, now);
-          // Remove from close list if it was there
-          poolNode.connectionsToClose.delete(connection);
-        }
+        // Connection is still valid, update its last used time
+        poolNode.activeConnections.set(connection, now);
+        // Remove from close list if it was there (connection was reused before timeout)
+        poolNode.connectionsToClose.delete(connection);
       } else {
         // New connection, track it
         this.activeConnections.set(connection, now);
