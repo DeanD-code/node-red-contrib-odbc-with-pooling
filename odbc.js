@@ -53,111 +53,44 @@ module.exports = function(RED) {
     
     this.pool = null;
     this.connecting = false;
-    this.activeConnections = new Map(); // Track connections and their last usage time
+    this.poolLastUsed = null; // Track when pool was last used (last connection usage)
     this.cleanupInterval = null;
+    this.poolClosedDueToIdle = false; // Flag to track if pool was closed due to idle timeout
 
-    // Set to track connections that should be closed when checked out
-    this.connectionsToClose = new Set();
+    // Cleanup function to close pool if idle
+    this.cleanupIdlePool = async () => {
+      if (!this.closeConnectionIdleTime) {
+        return;
+      }
 
-    // Cleanup function to close idle connections
-    this.cleanupIdleConnections = async () => {
-      if (!this.pool || !this.closeConnectionIdleTime) {
-        if (!this.pool) {
-          console.log('[ODBC Pool] Cleanup skipped: pool is null');
-        }
-        if (!this.closeConnectionIdleTime) {
-          console.log('[ODBC Pool] Cleanup skipped: closeConnectionIdleTime not set');
-        }
+      // If pool is already null or closed, nothing to do
+      if (!this.pool) {
+        return;
+      }
+
+      // If poolLastUsed is null, pool was never used
+      if (!this.poolLastUsed) {
         return;
       }
 
       const now = Date.now();
-      const idleConnections = [];
-      const totalTracked = this.activeConnections.size;
+      const idleTime = now - this.poolLastUsed;
+      const idleSeconds = (idleTime / 1000).toFixed(2);
+      const thresholdSeconds = (this.closeConnectionIdleTime / 1000).toFixed(2);
 
-      console.log(`[ODBC Pool] Cleanup running: ${totalTracked} connections tracked, timeout=${this.closeConnectionIdleTime}ms`);
+      console.log(`[ODBC Pool] Cleanup check: Pool idle for ${idleSeconds}s (threshold: ${thresholdSeconds}s)`);
 
-      // Check all tracked connections to find idle ones
-      for (const [connection, lastUsed] of this.activeConnections.entries()) {
-        const idleTime = now - lastUsed;
-        const idleSeconds = (idleTime / 1000).toFixed(2);
-        console.log(`[ODBC Pool] Connection check: idle=${idleSeconds}s, threshold=${(this.closeConnectionIdleTime/1000).toFixed(2)}s`);
-        
-        if (idleTime >= this.closeConnectionIdleTime) {
-          console.log(`[ODBC Pool] Found idle connection: idle=${idleSeconds}s (threshold=${(this.closeConnectionIdleTime/1000).toFixed(2)}s)`);
-          idleConnections.push(connection);
-        }
-      }
-      
-      if (idleConnections.length > 0) {
-        console.log(`[ODBC Pool] Processing ${idleConnections.length} idle connection(s)`);
-      } else {
-        console.log(`[ODBC Pool] No idle connections found`);
-      }
-
-      // For each idle connection:
-      // 1. Mark it for closure (so it gets closed when checked out)
-      // 2. Try to close it if it's currently checked out
-      // 3. Try to actively check it out from pool and close it
-      for (const trackedConnection of idleConnections) {
+      if (idleTime >= this.closeConnectionIdleTime) {
+        console.log(`[ODBC Pool] Pool has been idle for ${idleSeconds}s, closing pool`);
         try {
-          console.log(`[ODBC Pool] Processing idle connection, marking for closure`);
-          // Mark for closure
-          this.connectionsToClose.add(trackedConnection);
-          console.log(`[ODBC Pool] Marked connection for closure. Total marked: ${this.connectionsToClose.size}`);
-          
-          // Try to close if currently checked out
-          if (trackedConnection && typeof trackedConnection.close === 'function') {
-            try {
-              console.log(`[ODBC Pool] Attempting to close idle connection (might be checked out)`);
-              await trackedConnection.close();
-              // Successfully closed (was checked out)
-              console.log(`[ODBC Pool] Successfully closed idle connection (was checked out)`);
-              this.activeConnections.delete(trackedConnection);
-              this.connectionsToClose.delete(trackedConnection);
-            } catch (err) {
-              console.log(`[ODBC Pool] Could not close connection directly: ${err.message}. Connection likely in pool.`);
-              // Connection is in pool - try to check it out and close it
-              // This is a workaround: we check out a connection to see if it's our idle one
-              try {
-                console.log(`[ODBC Pool] Attempting to check out connection from pool to close idle one`);
-                const testConnection = await this.pool.connect();
-                // Check if this is the idle connection
-                if (testConnection === trackedConnection || 
-                    this.activeConnections.has(testConnection)) {
-                  const testLastUsed = this.activeConnections.get(testConnection);
-                  const testIdleTime = testLastUsed ? now - testLastUsed : 0;
-                  console.log(`[ODBC Pool] Checked out connection, idle time: ${(testIdleTime/1000).toFixed(2)}s`);
-                  if (testLastUsed && testIdleTime >= this.closeConnectionIdleTime) {
-                    // This connection is idle, close it
-                    console.log(`[ODBC Pool] Closing idle connection from pool`);
-                    await testConnection.close();
-                    this.activeConnections.delete(testConnection);
-                    this.connectionsToClose.delete(testConnection);
-                    console.log(`[ODBC Pool] Successfully closed idle connection from pool`);
-                  } else {
-                    // Not idle, return it
-                    console.log(`[ODBC Pool] Connection not idle, returning to pool`);
-                    await testConnection.close();
-                  }
-                } else {
-                  // Different connection, return it
-                  console.log(`[ODBC Pool] Different connection checked out, returning to pool`);
-                  await testConnection.close();
-                }
-              } catch (checkoutErr) {
-                console.log(`[ODBC Pool] Could not check out connection from pool: ${checkoutErr.message}`);
-                // Couldn't check out - pool might be busy, that's okay
-              }
-            }
-          } else {
-            console.log(`[ODBC Pool] Connection object invalid or missing close method`);
-          }
+          await this.closePool();
+          this.poolClosedDueToIdle = true;
+          this.poolLastUsed = null;
+          console.log(`[ODBC Pool] Pool closed due to idle timeout`);
         } catch (error) {
-          console.log(`[ODBC Pool] Error processing idle connection: ${error.message}`);
+          console.log(`[ODBC Pool] Error closing idle pool: ${error.message}`);
         }
       }
-      console.log(`[ODBC Pool] Cleanup completed. Remaining tracked: ${this.activeConnections.size}, marked for closure: ${this.connectionsToClose.size}`);
     };
 
     this.connect = async () => {
@@ -165,18 +98,24 @@ module.exports = function(RED) {
       let connection;
 
       // If pool is null, create a new one
-      // This handles the case where the flow was restarted or pool was closed
+      // This handles the case where the flow was restarted or pool was closed due to idle
       if (this.pool == null) {
-        // Clear any stale connection tracking
-        this.activeConnections.clear();
+        if (this.poolClosedDueToIdle) {
+          console.log(`[ODBC Pool] Pool was closed due to idle timeout, recreating pool`);
+          this.poolClosedDueToIdle = false;
+        } else {
+          console.log(`[ODBC Pool] Creating new pool`);
+        }
         
         try {
           this.pool = await odbc.pool(this.poolConfig);
           this.connecting = false;
+          console.log(`[ODBC Pool] Pool created successfully`);
         } catch (error) {
           // If pool creation fails, ensure state is clean
           this.pool = null;
           this.connecting = false;
+          console.log(`[ODBC Pool] Pool creation failed: ${error.message}`);
           throw(error);
         }
       }
@@ -184,13 +123,12 @@ module.exports = function(RED) {
       // Ensure cleanup interval is started if closeConnectionIdleTime is set
       // (in case pool was created before or interval was cleared)
       if (this.closeConnectionIdleTime && !this.cleanupInterval) {
-        // Check every second for idle connections
-        // Use a shorter interval for more responsive cleanup
-        const checkInterval = Math.min(1000, this.closeConnectionIdleTime / 2);
+        // Check every second for idle pool
+        const checkInterval = 1000;
         console.log(`[ODBC Pool] Starting cleanup interval: ${checkInterval}ms, timeout=${this.closeConnectionIdleTime}ms (${(this.closeConnectionIdleTime/1000).toFixed(2)}s)`);
         this.cleanupInterval = setInterval(() => {
           // Call async function without await (fire and forget)
-          this.cleanupIdleConnections().catch((err) => {
+          this.cleanupIdlePool().catch((err) => {
             console.log(`[ODBC Pool] Cleanup interval error: ${err.message}`);
           });
         }, checkInterval);
@@ -204,6 +142,7 @@ module.exports = function(RED) {
         if (errorMessage.includes('closed') || errorMessage.includes('invalid') || 
             connectError.code === 'IM001' || connectError.sqlState === '08003') {
           // Pool appears invalid, reset it
+          console.log(`[ODBC Pool] Pool connection failed, recreating pool`);
           try {
             await this.closePool();
             this.pool = await odbc.pool(this.poolConfig);
@@ -216,116 +155,24 @@ module.exports = function(RED) {
         }
       }
       
-      // Track this connection and update its last usage time
+      // Update pool last used time whenever a connection is obtained
+      // This tracks when the pool was last actively used
+      this.poolLastUsed = Date.now();
+      console.log(`[ODBC Pool] Connection obtained, pool last used updated: ${new Date(this.poolLastUsed).toISOString()}`);
+      
+      // Wrap connection methods to update pool last used time when actually used
       const poolNode = this;
-      let now = Date.now();
-      
-      console.log(`[ODBC Pool] connect() called. Tracked connections: ${poolNode.activeConnections.size}, Marked for closure: ${poolNode.connectionsToClose.size}`);
-      
-      // Check if this connection should be closed due to idle timeout
-      let shouldClose = false;
-      let closeReason = '';
-      
-      if (poolNode.connectionsToClose.has(connection)) {
-        // Connection was marked for closure
-        shouldClose = true;
-        closeReason = 'marked for closure';
-        console.log(`[ODBC Pool] Connection marked for closure`);
-      } else if (poolNode.activeConnections.has(connection)) {
-        // Connection was previously tracked, check if it's idle too long
-        const lastUsed = poolNode.activeConnections.get(connection);
-        const idleTime = now - lastUsed;
-        const idleSeconds = (idleTime / 1000).toFixed(2);
-        console.log(`[ODBC Pool] Previously tracked connection, idle: ${idleSeconds}s`);
-        
-        if (poolNode.closeConnectionIdleTime && idleTime >= poolNode.closeConnectionIdleTime) {
-          shouldClose = true;
-          closeReason = `idle for ${idleSeconds}s`;
-          console.log(`[ODBC Pool] Connection idle too long: ${idleSeconds}s >= ${(poolNode.closeConnectionIdleTime/1000).toFixed(2)}s`);
-        } else {
-          console.log(`[ODBC Pool] Connection still valid (idle ${idleSeconds}s < ${(poolNode.closeConnectionIdleTime/1000).toFixed(2)}s)`);
-        }
-      } else {
-        console.log(`[ODBC Pool] New connection, adding to tracking`);
-      }
-      
-      if (shouldClose) {
-        // Connection was idle too long, close it and get a new one
-        console.log(`[ODBC Pool] Closing connection (${closeReason}) and getting new one`);
-        try {
-          await connection.close();
-          console.log(`[ODBC Pool] Old connection closed successfully`);
-        } catch (e) {
-          console.log(`[ODBC Pool] Error closing old connection: ${e.message}`);
-          // Ignore close errors - connection might already be closed or in pool
-        }
-        poolNode.activeConnections.delete(connection);
-        poolNode.connectionsToClose.delete(connection);
-        // Get a new connection and track it
-        console.log(`[ODBC Pool] Getting new connection from pool`);
-        connection = await poolNode.pool.connect();
-        // Update tracking for the new connection
-        now = Date.now();
-        poolNode.activeConnections.set(connection, now);
-        console.log(`[ODBC Pool] New connection tracked at ${new Date(now).toISOString()}`);
-      } else if (poolNode.activeConnections.has(connection)) {
-        // Connection is already tracked - DON'T update lastUsed here!
-        // We only update lastUsed when the connection is actually used (query/procedure)
-        // This preserves the idle time so we can detect idle connections
-        const existingLastUsed = poolNode.activeConnections.get(connection);
-        const existingIdleTime = ((now - existingLastUsed) / 1000).toFixed(2);
-        console.log(`[ODBC Pool] Connection already tracked. Last used: ${new Date(existingLastUsed).toISOString()}, idle: ${existingIdleTime}s. Keeping timestamp.`);
-        // Remove from close list if it was there (connection was reused, but we'll check on actual use)
-        if (poolNode.connectionsToClose.has(connection)) {
-          poolNode.connectionsToClose.delete(connection);
-          console.log(`[ODBC Pool] Removed connection from close list (will be checked on actual use)`);
-        }
-      } else {
-        // New connection, track it
-        this.activeConnections.set(connection, now);
-        console.log(`[ODBC Pool] New connection tracked at ${new Date(now).toISOString()}`);
-      }
-
-      // Update last usage time whenever connection is used (query/procedure)
-      // This is the ONLY place we update lastUsed for actual usage
-      const updateLastUsed = () => {
+      const updatePoolLastUsed = () => {
         const newTime = Date.now();
-        if (poolNode.activeConnections.has(connection)) {
-          const oldLastUsed = poolNode.activeConnections.get(connection);
-          poolNode.activeConnections.set(connection, newTime);
-          const oldIdle = ((newTime - oldLastUsed) / 1000).toFixed(2);
-          console.log(`[ODBC Pool] Updated lastUsed for connection (actually used): ${new Date(newTime).toISOString()}, was idle ${oldIdle}s`);
-        } else {
-          // Connection not in tracking, add it
-          poolNode.activeConnections.set(connection, newTime);
-          console.log(`[ODBC Pool] Added connection to tracking on first use: ${new Date(newTime).toISOString()}`);
-        }
-        // Remove from close list since connection is being used
-        if (poolNode.connectionsToClose.has(connection)) {
-          poolNode.connectionsToClose.delete(connection);
-          console.log(`[ODBC Pool] Removed connection from close list (now being used)`);
-        }
+        poolNode.poolLastUsed = newTime;
+        console.log(`[ODBC Pool] Pool activity: last used updated to ${new Date(newTime).toISOString()}`);
       };
 
-        // Wrap the connection's close method - DON'T remove from tracking
-        // We keep tracking even after close() so we can close idle connections
-        // IMPORTANT: Don't update lastUsed when closing - keep the last usage time
-        // so we can track how long it's been idle in the pool
-        const originalClose = connection.close.bind(connection);
-        connection.close = async function() {
-          const lastUsed = poolNode.activeConnections.get(connection);
-          const lastUsedDate = lastUsed ? new Date(lastUsed).toISOString() : 'unknown';
-          console.log(`[ODBC Pool] Connection.close() called. Last used: ${lastUsedDate}. Keeping timestamp for idle tracking.`);
-          // Don't update lastUsed here - keep the timestamp from when it was last used
-          // This allows the cleanup to detect idle connections
-          return originalClose();
-        };
-
-      // Wrap common connection methods to update last used time
+      // Wrap common connection methods to update pool last used time
       if (connection.query) {
         const originalQuery = connection.query.bind(connection);
         connection.query = function(...args) {
-          updateLastUsed();
+          updatePoolLastUsed();
           return originalQuery(...args);
         };
       }
@@ -333,7 +180,7 @@ module.exports = function(RED) {
       if (connection.callProcedure) {
         const originalCallProcedure = connection.callProcedure.bind(connection);
         connection.callProcedure = function(...args) {
-          updateLastUsed();
+          updatePoolLastUsed();
           return originalCallProcedure(...args);
         };
       }
@@ -343,33 +190,22 @@ module.exports = function(RED) {
 
     // Method to close and reset the pool
     this.closePool = async () => {
-      if (this.cleanupInterval) {
-        clearInterval(this.cleanupInterval);
-        this.cleanupInterval = null;
-      }
-      
-      // Close all tracked connections
-      for (const connection of this.activeConnections.keys()) {
-        try {
-          if (connection && typeof connection.close === 'function') {
-            await connection.close().catch(() => {});
-          }
-        } catch (error) {
-          // Ignore errors
-        }
-      }
-      this.activeConnections.clear();
-      this.connectionsToClose.clear();
+      console.log(`[ODBC Pool] Closing pool`);
       
       // Try to close the pool if it has a close method
       if (this.pool) {
         try {
           if (typeof this.pool.close === 'function') {
             await this.pool.close().catch(() => {});
+            console.log(`[ODBC Pool] Pool.close() called`);
           } else if (typeof this.pool.disconnect === 'function') {
             await this.pool.disconnect().catch(() => {});
+            console.log(`[ODBC Pool] Pool.disconnect() called`);
+          } else {
+            console.log(`[ODBC Pool] Pool has no close/disconnect method, setting to null`);
           }
         } catch (error) {
+          console.log(`[ODBC Pool] Error closing pool: ${error.message}`);
           // Ignore errors - pool might not have a close method
         }
       }
@@ -377,10 +213,15 @@ module.exports = function(RED) {
       // Reset pool state
       this.pool = null;
       this.connecting = false;
+      console.log(`[ODBC Pool] Pool closed and reset`);
     };
 
     // Cleanup on node close
     this.on('close', () => {
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+        this.cleanupInterval = null;
+      }
       this.closePool().catch(() => {});
     });
   }
