@@ -85,6 +85,25 @@ module.exports = function(RED) {
       };
     }
 
+    // Wrap close to decrement active connection count safely
+    if (connection.close) {
+      const originalClose = connection.close.bind(connection);
+      let hasClosed = false;
+      connection.close = async function(...args) {
+        if (hasClosed) {
+          return originalClose(...args);
+        }
+        hasClosed = true;
+        try {
+          return await originalClose(...args);
+        } finally {
+          if (typeof poolNode.poolActiveConnections === 'number') {
+            poolNode.poolActiveConnections = Math.max(0, poolNode.poolActiveConnections - 1);
+          }
+        }
+      };
+    }
+
     return connection;
   }
 
@@ -128,6 +147,7 @@ module.exports = function(RED) {
     this.poolLastUsed = null;
     this.cleanupInterval = null;
     this.poolClosedDueToIdle = false;
+    this.poolActiveConnections = 0;
 
     // Cleanup function to close pool if idle
     this.cleanupIdlePool = async () => {
@@ -197,6 +217,10 @@ module.exports = function(RED) {
       this.startCleanupInterval();
 
       const connection = await this.getConnection();
+      // Track active connections on checkout
+      if (typeof this.poolActiveConnections === 'number') {
+        this.poolActiveConnections += 1;
+      }
       this.poolLastUsed = Date.now();
 
       return wrapConnectionMethods(connection, this);
@@ -218,6 +242,7 @@ module.exports = function(RED) {
       
       this.pool = null;
       this.connecting = false;
+      this.poolActiveConnections = 0;
     };
 
     // Cleanup on node close
@@ -238,20 +263,41 @@ module.exports = function(RED) {
     this.queryString = config.query;
     this.outfield = config.outField;
     this.name = config.name;
+    this.activeQueries = 0; // Track number of active queries
+    
+    const getStatusText = () => {
+      const hasPool = !!(this.poolNode && this.poolNode.pool);
+      const active = (this.poolNode && typeof this.poolNode.poolActiveConnections === 'number')
+        ? this.poolNode.poolActiveConnections
+        : 0;
+      
+      if (!hasPool) {
+        return 'idle';
+      }
+      
+      if (this.activeQueries > 0) {
+        return `querying (${active})`;
+      }
+      
+      return `ready (${active})`;
+    };
 
     this.runQuery = async function(message, send, done) {
       let connection;
+      
+      // Increment active queries counter
+      this.activeQueries += 1;
+      this.status({fill: "blue", shape: "dot", text: getStatusText()});
 
       try {
         connection = await this.poolNode.connect();
       } catch (error) {
+        this.activeQueries -= 1;
         if (error) {
           handleNodeError(this, error, message, done);
         }
         return;
       }
-
-      this.status({fill: "blue", shape: "dot", text: "querying..."});
 
       // Parse payload to get query and parameters
       let parameters = undefined;
@@ -264,8 +310,9 @@ module.exports = function(RED) {
           parameters = payloadData.parameters || undefined;
         }
       } catch (error) {
+        this.activeQueries -= 1;
         this.status({fill: "red", shape: "ring", text: error.message});
-        connection.close();
+        await connection.close().catch(() => {});
         if (done) {
           done(error);
         } else {
@@ -282,25 +329,28 @@ module.exports = function(RED) {
         if (isConnectionClosedError(error)) {
           // Retry with new connection
           try {
-            connection.close().catch(() => {});
+            await connection.close().catch(() => {});
             connection = await this.poolNode.connect();
             result = await connection.query(queryString, parameters);
           } catch (retryError) {
+            this.activeQueries -= 1;
             handleNodeError(this, retryError, message, done);
-            connection.close().catch(() => {});
+            await connection.close().catch(() => {});
             return;
           }
         } else {
+          this.activeQueries -= 1;
           handleNodeError(this, error, message, done);
-          connection.close();
+          await connection.close().catch(() => {});
           return;
         }
       }
 
-      connection.close();
+      await connection.close().catch(() => {});
+      this.activeQueries -= 1;
       message.payload = result;
       send(message);
-      this.status({fill: 'green', shape: 'dot', text: 'ready'});
+      this.status({fill: 'green', shape: 'dot', text: getStatusText()});
       if (done) {
         done();
       }
@@ -321,7 +371,7 @@ module.exports = function(RED) {
     }
     
     this.on('input', this.checkPool);
-    this.status({fill: 'green', shape: 'dot', text: 'ready'});
+    this.status({fill: 'green', shape: 'dot', text: getStatusText()});
   }
 
   RED.nodes.registerType("odbc-pooling-query", odbcQuery);
@@ -333,6 +383,24 @@ module.exports = function(RED) {
     this.schema = config.schema || null;
     this.procedure = config.procedure;
     this.outfield = config.outField;
+    this.activeQueries = 0; // Track number of active procedures
+    
+    const getStatusText = () => {
+      const hasPool = !!(this.poolNode && this.poolNode.pool);
+      const active = (this.poolNode && typeof this.poolNode.poolActiveConnections === 'number')
+        ? this.poolNode.poolActiveConnections
+        : 0;
+      
+      if (!hasPool) {
+        return 'idle';
+      }
+      
+      if (this.activeQueries > 0) {
+        return `querying (${active})`;
+      }
+      
+      return `ready (${active})`;
+    };
 
     // Parse parameters from config if provided
     this.parameters = undefined;
@@ -347,17 +415,20 @@ module.exports = function(RED) {
 
     this.runProcedure = async function(message, send, done) {
       let connection;
+      
+      // Increment active queries counter
+      this.activeQueries += 1;
+      this.status({fill: "blue", shape: "dot", text: getStatusText()});
 
       try {
         connection = await this.poolNode.connect();
       } catch (error) {
+        this.activeQueries -= 1;
         if (error) {
           handleNodeError(this, error, message, done);
         }
         return;
       }
-
-      this.status({fill: "blue", shape: "dot", text: "running procedure..."});
 
       // Get procedure parameters from payload or config
       let catalog = this.catalog;
@@ -374,8 +445,9 @@ module.exports = function(RED) {
           parameters = payloadData.parameters || parameters;
         }
       } catch (error) {
+        this.activeQueries -= 1;
         this.status({fill: "red", shape: "ring", text: error.message});
-        connection.close();
+        await connection.close().catch(() => {});
         if (done) {
           done(error);
         } else {
@@ -392,16 +464,17 @@ module.exports = function(RED) {
         if (isConnectionClosedError(error)) {
           // Retry with new connection
           try {
-            connection.close().catch(() => {});
+            await connection.close().catch(() => {});
             connection = await this.poolNode.connect();
             result = await connection.callProcedure(catalog, schema, procedure, parameters);
           } catch (retryError) {
+            this.activeQueries -= 1;
             const retryErrorMessage = retryError.odbcErrors && retryError.odbcErrors[0] 
               ? retryError.odbcErrors[0].message 
               : retryError.message;
             this.error(retryError);
             this.status({fill: "red", shape: "ring", text: retryErrorMessage});
-            connection.close().catch(() => {});
+            await connection.close().catch(() => {});
             if (done) {
               done(retryError);
             } else {
@@ -410,19 +483,21 @@ module.exports = function(RED) {
             return;
           }
         } else {
+          this.activeQueries -= 1;
           const errorMessage = error.odbcErrors && error.odbcErrors[0] 
             ? error.odbcErrors[0].message 
             : error.message;
           handleNodeError(this, { ...error, message: errorMessage }, message, done);
-          connection.close();
+          await connection.close().catch(() => {});
           return;
         }
       }
 
-      connection.close();
+      await connection.close().catch(() => {});
+      this.activeQueries -= 1;
       message.payload = result;
       send(message);
-      this.status({fill: 'green', shape: 'dot', text: 'ready'});
+      this.status({fill: 'green', shape: 'dot', text: getStatusText()});
       if (done) {
         done();
       }
@@ -443,6 +518,7 @@ module.exports = function(RED) {
     }
     
     this.on('input', this.runProcedure);
+    this.status({fill: 'green', shape: 'dot', text: getStatusText()});
   }
 
   RED.nodes.registerType("odbc-pooling-procedure", odbcProcedure);
